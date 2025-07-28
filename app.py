@@ -5,7 +5,7 @@ from typing import Deque, Dict, Optional
 
 from PyQt6.QtCore import (QObject, QPoint, Qt, QTimer, pyqtSignal)
 from PyQt6.QtGui import QMouseEvent, QMovie, QPixmap
-from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QMessageBox, QWidget
 
 from config import ASSET_DIR, SPRITES
 from logic import GameLogic
@@ -58,7 +58,7 @@ class PixelSlayerWidget(QWidget):
                 for state, filename in states.items():
                     path: Path = ASSET_DIR / filename
                     if not path.exists():
-                        print(f"Error: Asset not found at {path}")
+                        QMessageBox.critical(self, "Lỗi tải tài nguyên", f"Không tìm thấy tài nguyên: {path}. Ứng dụng sẽ thoát.")
                         sys.exit(1)  # Exit if essential asset is missing
 
                     if path.suffix == ".gif":
