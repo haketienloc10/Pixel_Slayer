@@ -13,7 +13,7 @@ SCRIPT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 CONFIG = {
     "position": "random",
     "target_gif_size": (200, 200),
-    "gif_overlap_px": 100, 
+    "gif_overlap_px": 100,
     "display_mode": "single", # Chế độ hiển thị: 'single' hoặc 'double'
 }
 # -------------------------
@@ -21,100 +21,152 @@ CONFIG = {
 class SignalBridge(QObject):
     keyPressed = pyqtSignal()
 
+class MoviePlayer(QObject):
+    frameChanged = pyqtSignal(QPixmap)
+    finished = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.show_next_frame)
+        self.frames = []
+        self.current_frame_index = 0
+        self.frame_delay = 50  # ms
+
+    def set_frames(self, frames, delay):
+        self.frames = frames
+        self.frame_delay = delay if delay > 0 else 50
+        self.current_frame_index = 0
+
+    def start(self):
+        if not self.frames:
+            return
+        self.current_frame_index = 0
+        self.timer.start(self.frame_delay)
+        self.show_next_frame()
+
+    def stop(self):
+        self.timer.stop()
+        self.frames = []
+
+    def show_next_frame(self):
+        if not self.frames:
+            self.timer.stop()
+            return
+
+        pixmap = self.frames[self.current_frame_index]
+        self.frameChanged.emit(pixmap)
+
+        self.current_frame_index += 1
+        if self.current_frame_index >= len(self.frames):
+            self.timer.stop()
+            self.finished.emit()
+
+
 class GIFPlayer(QWidget):
     def __init__(self, signal_bridge):
         super().__init__()
         self.signal_bridge = signal_bridge
         self.is_playing = False
+        self.pixmap_cache = {}
 
         self.left_dir = os.path.join(SCRIPT_DIRECTORY, "assets", "left")
         self.right_dir = os.path.join(SCRIPT_DIRECTORY, "assets", "right")
 
         self.left_gifs = [f for f in os.listdir(self.left_dir) if f.endswith('.gif')]
         self.right_gifs = [f for f in os.listdir(self.right_dir) if f.endswith('.gif')]
-        self.all_gifs = self.left_gifs + self.right_gifs
 
-        if not self.all_gifs:
-            print(f"Lỗi: Không tìm thấy file GIF nào trong thư mục '{self.left_dir}' hoặc '{self.right_dir}'")
+        if not self.left_gifs and not self.right_gifs:
+            print(f"Lỗi: Không tìm thấy file GIF nào trong '{self.left_dir}' hoặc '{self.right_dir}'")
             sys.exit(1)
 
-        self.shutdown_timer = QTimer()
         self.init_ui()
         self.connect_signals()
 
-    def _update_gif_and_window_size(self, movie, label):
-        target_size_config = CONFIG.get("target_gif_size")
-        movie.jumpToFrame(0)
-        original_size = movie.frameRect().size()
+    def _get_cached_movie_frames(self, gif_path, target_size_tuple, is_flipped):
+        target_size = QSize(*target_size_tuple)
+        cache_key = (gif_path, target_size_tuple, is_flipped)
+        if cache_key in self.pixmap_cache:
+            return self.pixmap_cache[cache_key]
 
+        movie = QMovie(gif_path)
+        if not movie.isValid():
+            return [], 0, QSize(0, 0)
+
+        movie.setCacheMode(QMovie.CacheMode.CacheAll)
+        movie.jumpToFrame(0)
+        
+        original_size = movie.frameRect().size()
         if not original_size.isValid():
+            return [], 0, QSize(0, 0)
+
+        scaled_size = original_size.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio)
+        delay = movie.nextFrameDelay()
+
+        processed_frames = []
+        for i in range(movie.frameCount()):
+            movie.jumpToFrame(i);
+            pixmap = movie.currentPixmap()
+            if is_flipped:
+                image = pixmap.toImage()
+                mirrored_image = image.mirrored(True, False)
+                pixmap = QPixmap.fromImage(mirrored_image)
+            
+            scaled_pixmap = pixmap.scaled(scaled_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            processed_frames.append(scaled_pixmap)
+
+        self.pixmap_cache[cache_key] = (processed_frames, delay, scaled_size)
+        return processed_frames, delay, scaled_size
+
+    def _setup_movie_player(self, movie_player, label, gif_path, is_flipped):
+        target_size_config = CONFIG.get("target_gif_size", (200, 200))
+        frames, delay, scaled_size = self._get_cached_movie_frames(gif_path, target_size_config, is_flipped)
+
+        if not frames:
             return QSize(0, 0)
 
-        if target_size_config:
-            target_size = QSize(*target_size_config)
-            scaled_size = original_size.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio)
-            label.setFixedSize(scaled_size)
-            return scaled_size
-        else:
-            label.setFixedSize(original_size)
-            return original_size
+        label.setFixedSize(scaled_size)
+        movie_player.set_frames(frames, delay)
+        return scaled_size
 
     def change_gifs(self):
-        """Chọn một hoặc hai GIF tùy theo chế độ và cập nhật kích thước."""
-        self.movie1.stop()
-        self.movie2.stop()
+        self.movie1_player.stop()
+        self.movie2_player.stop()
+        self.movie1_finished = False
+        self.movie2_finished = False
 
         mode = CONFIG.get("display_mode", "single")
 
         if mode == 'single':
             self.label2.hide()
-
-            # 1. Ngẫu nhiên chọn thư mục (left hoặc right)
-            if random.choice([True, False]):
-                source_dir, source_list = self.left_dir, self.left_gifs
-            else:
-                source_dir, source_list = self.right_dir, self.right_gifs
+            use_left = random.choice([True, False])
+            source_dir = self.left_dir if use_left and self.left_gifs else self.right_dir
+            source_list = self.left_gifs if use_left and self.left_gifs else self.right_gifs
             
-            # Đảm bảo danh sách đã chọn không rỗng
-            if not source_list:
+            if not source_list: # Fallback if one directory is empty
                 source_dir = self.right_dir if source_dir == self.left_dir else self.left_dir
                 source_list = self.right_gifs if source_dir == self.right_dir else self.left_gifs
 
             gif_name = random.choice(source_list)
             gif_path = os.path.join(source_dir, gif_name)
+            is_flipped = random.choice([True, False])
 
-            # 2. Ngẫu nhiên quyết định có lật ngược hay không
-            self.movie1_is_flipped = random.choice([True, False])
-
-            self.movie1.setFileName(gif_path)
-            size = self._update_gif_and_window_size(self.movie1, self.label1)
+            size = self._setup_movie_player(self.movie1_player, self.label1, gif_path, is_flipped)
             self.setFixedSize(size)
             self.label1.move(0, 0)
 
-        else: # Chế độ 'double'
+        else: # 'double' mode
             self.label2.show()
-            if random.choice([True, False]) and self.right_gifs:
-                gif1_source_dir, gif1_list, self.movie1_is_flipped = self.right_dir, self.right_gifs, True
-            else:
-                gif1_source_dir, gif1_list, self.movie1_is_flipped = self.left_dir, self.left_gifs, False
+            
+            gif1_path = os.path.join(self.left_dir, random.choice(self.left_gifs)) if self.left_gifs else ""
+            gif2_path = os.path.join(self.right_dir, random.choice(self.right_gifs)) if self.right_gifs else ""
+            
+            if not gif1_path or not gif2_path: # Handle empty directories
+                 self.change_gifs() # Retry
+                 return
 
-            if random.choice([True, False]) and self.left_gifs:
-                gif2_source_dir, gif2_list, self.movie2_is_flipped = self.left_dir, self.left_gifs, True
-            else:
-                gif2_source_dir, gif2_list, self.movie2_is_flipped = self.right_dir, self.right_gifs, False
-
-            gif1_name = random.choice(gif1_list)
-            gif2_name = random.choice(gif2_list)
-
-            if gif1_source_dir == gif2_source_dir and len(gif1_list) > 1:
-                while gif2_name == gif1_name:
-                    gif2_name = random.choice(gif2_list)
-
-            self.movie1.setFileName(os.path.join(gif1_source_dir, gif1_name))
-            self.movie2.setFileName(os.path.join(gif2_source_dir, gif2_name))
-
-            size1 = self._update_gif_and_window_size(self.movie1, self.label1)
-            size2 = self._update_gif_and_window_size(self.movie2, self.label2)
+            size1 = self._setup_movie_player(self.movie1_player, self.label1, gif1_path, is_flipped=False)
+            size2 = self._setup_movie_player(self.movie2_player, self.label2, gif2_path, is_flipped=True)
 
             overlap = CONFIG.get("gif_overlap_px", 0)
             total_width = size1.width() + size2.width() - overlap
@@ -131,40 +183,21 @@ class GIFPlayer(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self.label1 = QLabel(self)
-        self.movie1 = QMovie(self)
-        self.movie1_is_flipped = False
+        self.movie1_player = MoviePlayer(self)
+        self.movie1_finished = False
 
         self.label2 = QLabel(self)
-        self.movie2 = QMovie(self)
-        self.movie2_is_flipped = False
-
-        self.change_gifs()
+        self.movie2_player = MoviePlayer(self)
+        self.movie2_finished = False
+        
         self.hide()
 
     def connect_signals(self):
         self.signal_bridge.keyPressed.connect(self.handle_key_press)
-        self.movie1.frameChanged.connect(self.update_frame)
-        self.movie2.frameChanged.connect(self.update_frame)
-
-    def update_frame(self, frame_number):
-        movie = self.sender()
-        if movie == self.movie1:
-            label, is_flipped = self.label1, self.movie1_is_flipped
-        elif movie == self.movie2:
-            label, is_flipped = self.label2, self.movie2_is_flipped
-        else: return
-
-        pixmap = movie.currentPixmap()
-        if is_flipped:
-            image = pixmap.toImage()
-            mirrored_image = image.mirrored(True, False)
-            pixmap = QPixmap.fromImage(mirrored_image)
-        
-        scaled_pixmap = pixmap.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        label.setPixmap(scaled_pixmap)
-
-        if movie.frameCount() > 0 and frame_number == movie.frameCount() - 1:
-            self.on_gif_finished()
+        self.movie1_player.frameChanged.connect(self.label1.setPixmap)
+        self.movie2_player.frameChanged.connect(self.label2.setPixmap)
+        self.movie1_player.finished.connect(self.on_gif1_finished)
+        self.movie2_player.finished.connect(self.on_gif2_finished)
 
     def position_window(self):
         primary_screen = QApplication.primaryScreen()
@@ -179,16 +212,30 @@ class GIFPlayer(QWidget):
         self.change_gifs()
         self.position_window()
         self.show()
-        self.movie1.start()
+        self.movie1_player.start()
         if CONFIG.get("display_mode") == 'double':
-            self.movie2.start()
+            self.movie2_player.start()
 
-    def on_gif_finished(self):
+    def on_gif1_finished(self):
+        self.movie1_finished = True
+        self.check_both_finished()
+
+    def on_gif2_finished(self):
+        self.movie2_finished = True
+        self.check_both_finished()
+
+    def check_both_finished(self):
         if not self.is_playing: return
-        self.is_playing = False
-        self.movie1.stop()
-        self.movie2.stop()
-        self.hide()
+        
+        mode = CONFIG.get("display_mode", "single")
+        if mode == 'single':
+            if self.movie1_finished:
+                self.is_playing = False
+                self.hide()
+        else: # double mode
+            if self.movie1_finished and self.movie2_finished:
+                self.is_playing = False
+                self.hide()
 
     def handle_key_press(self):
         if self.is_playing: return
@@ -199,22 +246,24 @@ def main():
     app = QApplication(sys.argv)
     signal_bridge = SignalBridge()
     player = GIFPlayer(signal_bridge)
-    
+
     def on_press(key):
         signal_bridge.keyPressed.emit()
 
     listener = keyboard.Listener(on_press=on_press)
     listener.start()
-    
+
     def shutdown_handler(sig, frame):
         print("\nĐã đóng chương trình...")
         listener.stop()
         QApplication.instance().quit()
 
     signal.signal(signal.SIGINT, shutdown_handler)
-
-    player.shutdown_timer.start(500)
-    player.shutdown_timer.timeout.connect(lambda: None)
+    
+    # This is a trick to make Python's signal handler work with PyQt
+    timer = QTimer()
+    timer.start(500)
+    timer.timeout.connect(lambda: None)
 
     sys.exit(app.exec())
 
