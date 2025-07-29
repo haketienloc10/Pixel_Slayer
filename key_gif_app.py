@@ -14,7 +14,7 @@ CONFIG = {
     "position": "random",
     "target_gif_size": (200, 200),
     "gif_overlap_px": 100,
-    "display_mode": "double", # Chế độ hiển thị: 'single' hoặc 'double'
+    "display_mode": "single", # Chế độ hiển thị: 'single' hoặc 'double'
 }
 # -------------------------
 
