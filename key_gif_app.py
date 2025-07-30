@@ -5,21 +5,19 @@ import random
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel
 from PyQt6.QtGui import QMovie, QScreen, QPixmap, QImage
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize
-from pynput import keyboard
+from pynput import keyboard, mouse
 
 SCRIPT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 # --- CẤU HÌNH ỨNG DỤNG ---
 CONFIG = {
-    "position": "random",
+    "position": "bottom",
     "target_gif_size": (200, 200),
-    "gif_overlap_px": 100,
-    "display_mode": "single", # Chế độ hiển thị: 'single' hoặc 'double'
 }
 # -------------------------
 
 class SignalBridge(QObject):
-    keyPressed = pyqtSignal()
+    activationRequired = pyqtSignal()
 
 class MoviePlayer(QObject):
     frameChanged = pyqtSignal(QPixmap)
@@ -70,14 +68,11 @@ class GIFPlayer(QWidget):
         self.is_playing = False
         self.pixmap_cache = {}
 
-        self.left_dir = os.path.join(SCRIPT_DIRECTORY, "assets", "left")
-        self.right_dir = os.path.join(SCRIPT_DIRECTORY, "assets", "right")
+        self.assets_dir = os.path.join(SCRIPT_DIRECTORY, "assets")
+        self.gifs = [f for f in os.listdir(self.assets_dir) if f.endswith('.gif')]
 
-        self.left_gifs = [f for f in os.listdir(self.left_dir) if f.endswith('.gif')]
-        self.right_gifs = [f for f in os.listdir(self.right_dir) if f.endswith('.gif')]
-
-        if not self.left_gifs and not self.right_gifs:
-            print(f"Lỗi: Không tìm thấy file GIF nào trong '{self.left_dir}' hoặc '{self.right_dir}'")
+        if not self.gifs:
+            print(f"Lỗi: Không tìm thấy file GIF nào trong '{self.assets_dir}'")
             sys.exit(1)
 
         self.init_ui()
@@ -130,114 +125,80 @@ class GIFPlayer(QWidget):
         return scaled_size
 
     def change_gifs(self):
-        self.movie1_player.stop()
-        self.movie2_player.stop()
-        self.movie1_finished = False
-        self.movie2_finished = False
+        self.movie_player.stop()
 
-        mode = CONFIG.get("display_mode", "single")
+        gif_name = random.choice(self.gifs)
+        gif_path = os.path.join(self.assets_dir, gif_name)
+        is_flipped = random.choice([True, False])
 
-        if mode == 'single':
-            self.label2.hide()
-            use_left = random.choice([True, False])
-            source_dir = self.left_dir if use_left and self.left_gifs else self.right_dir
-            source_list = self.left_gifs if use_left and self.left_gifs else self.right_gifs
-            
-            if not source_list: # Fallback if one directory is empty
-                source_dir = self.right_dir if source_dir == self.left_dir else self.left_dir
-                source_list = self.right_gifs if source_dir == self.right_dir else self.left_gifs
-
-            gif_name = random.choice(source_list)
-            gif_path = os.path.join(source_dir, gif_name)
-            is_flipped = random.choice([True, False])
-
-            size = self._setup_movie_player(self.movie1_player, self.label1, gif_path, is_flipped)
-            self.setFixedSize(size)
-            self.label1.move(0, 0)
-
-        else: # 'double' mode
-            self.label2.show()
-            
-            gif1_path = os.path.join(self.left_dir, random.choice(self.left_gifs)) if self.left_gifs else ""
-            gif2_path = os.path.join(self.right_dir, random.choice(self.right_gifs)) if self.right_gifs else ""
-            
-            if not gif1_path or not gif2_path: # Handle empty directories
-                 self.change_gifs() # Retry
-                 return
-
-            size1 = self._setup_movie_player(self.movie1_player, self.label1, gif1_path, is_flipped=False)
-            size2 = self._setup_movie_player(self.movie2_player, self.label2, gif2_path, is_flipped=True)
-
-            overlap = CONFIG.get("gif_overlap_px", 0)
-            total_width = size1.width() + size2.width() - overlap
-            max_height = max(size1.height(), size2.height())
-            self.setFixedSize(total_width, max_height)
-
-            y1_pos = (max_height - size1.height()) // 2
-            y2_pos = (max_height - size2.height()) // 2
-            self.label1.move(0, y1_pos)
-            self.label2.move(size1.width() - overlap, y2_pos)
+        size = self._setup_movie_player(self.movie_player, self.label, gif_path, is_flipped)
+        self.setFixedSize(size)
+        self.label.move(0, 0)
 
     def init_ui(self):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        self.label1 = QLabel(self)
-        self.movie1_player = MoviePlayer(self)
-        self.movie1_finished = False
-
-        self.label2 = QLabel(self)
-        self.movie2_player = MoviePlayer(self)
-        self.movie2_finished = False
+        self.label = QLabel(self)
+        self.movie_player = MoviePlayer(self)
         
         self.hide()
 
     def connect_signals(self):
-        self.signal_bridge.keyPressed.connect(self.handle_key_press)
-        self.movie1_player.frameChanged.connect(self.label1.setPixmap)
-        self.movie2_player.frameChanged.connect(self.label2.setPixmap)
-        self.movie1_player.finished.connect(self.on_gif1_finished)
-        self.movie2_player.finished.connect(self.on_gif2_finished)
+        self.signal_bridge.activationRequired.connect(self.handle_activation_request)
+        self.movie_player.frameChanged.connect(self.label.setPixmap)
+        self.movie_player.finished.connect(self.on_gif_finished)
 
     def position_window(self):
         primary_screen = QApplication.primaryScreen()
         if not primary_screen: return
         screen_geometry = primary_screen.availableGeometry()
         win_width, win_height = self.width(), self.height()
-        x = random.randint(0, screen_geometry.width() - win_width)
-        y = random.randint(0, screen_geometry.height() - win_height)
+        
+        position = CONFIG.get("position", "random").lower()
+        
+        if position == "random":
+            x = random.randint(0, screen_geometry.width() - win_width)
+            y = random.randint(0, screen_geometry.height() - win_height)
+        elif position == "top":
+            x = random.randint(0, screen_geometry.width() - win_width)
+            y = 0
+        elif position == "bottom":
+            x = random.randint(0, screen_geometry.width() - win_width)
+            y = screen_geometry.height() - win_height
+        elif position == "left":
+            x = 0
+            y = random.randint(0, screen_geometry.height() - win_height)
+        elif position == "right":
+            x = screen_geometry.width() - win_width
+            y = random.randint(0, screen_geometry.height() - win_height)
+        elif position == "center":
+            # Cho phép một chút ngẫu nhiên xung quanh vị trí giữa
+            center_x = (screen_geometry.width() - win_width) // 2
+            center_y = (screen_geometry.height() - win_height) // 2
+            x = center_x + random.randint(-50, 50)
+            y = center_y + random.randint(-50, 50)
+            # Đảm bảo không vượt ra ngoài màn hình
+            x = max(0, min(x, screen_geometry.width() - win_width))
+            y = max(0, min(y, screen_geometry.height() - win_height))
+        else:  # default to random if invalid position
+            x = random.randint(0, screen_geometry.width() - win_width)
+            y = random.randint(0, screen_geometry.height() - win_height)
+            
         self.move(x, y)
 
     def show_gifs(self):
         self.change_gifs()
         self.position_window()
         self.show()
-        self.movie1_player.start()
-        if CONFIG.get("display_mode") == 'double':
-            self.movie2_player.start()
+        self.movie_player.start()
 
-    def on_gif1_finished(self):
-        self.movie1_finished = True
-        self.check_both_finished()
-
-    def on_gif2_finished(self):
-        self.movie2_finished = True
-        self.check_both_finished()
-
-    def check_both_finished(self):
+    def on_gif_finished(self):
         if not self.is_playing: return
-        
-        mode = CONFIG.get("display_mode", "single")
-        if mode == 'single':
-            if self.movie1_finished:
-                self.is_playing = False
-                self.hide()
-        else: # double mode
-            if self.movie1_finished and self.movie2_finished:
-                self.is_playing = False
-                self.hide()
+        self.is_playing = False
+        self.hide()
 
-    def handle_key_press(self):
+    def handle_activation_request(self):
         if self.is_playing: return
         self.is_playing = True
         self.show_gifs()
@@ -248,14 +209,21 @@ def main():
     player = GIFPlayer(signal_bridge)
 
     def on_press(key):
-        signal_bridge.keyPressed.emit()
+        signal_bridge.activationRequired.emit()
 
-    listener = keyboard.Listener(on_press=on_press)
-    listener.start()
+    def on_click(x, y, button, pressed):
+        if button == mouse.Button.left and pressed:
+            signal_bridge.activationRequired.emit()
+
+    keyboard_listener = keyboard.Listener(on_press=on_press)
+    mouse_listener = mouse.Listener(on_click=on_click)
+    keyboard_listener.start()
+    mouse_listener.start()
 
     def shutdown_handler(sig, frame):
         print("\nĐã đóng chương trình...")
-        listener.stop()
+        keyboard_listener.stop()
+        mouse_listener.stop()
         QApplication.instance().quit()
 
     signal.signal(signal.SIGINT, shutdown_handler)
