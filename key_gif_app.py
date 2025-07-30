@@ -125,6 +125,10 @@ class GIFPlayer(QWidget):
         return scaled_size
 
     def change_gifs(self):
+        if self.is_playing:
+            return
+
+        self.is_playing = True
         self.movie_player.stop()
 
         gif_name = random.choice(self.gifs)
@@ -134,6 +138,7 @@ class GIFPlayer(QWidget):
         size = self._setup_movie_player(self.movie_player, self.label, gif_path, is_flipped)
         self.setFixedSize(size)
         self.label.move(0, 0)
+        self.show_gifs()
 
     def init_ui(self):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
