@@ -2,6 +2,7 @@ import sys
 import os
 import signal
 import random
+from collections import OrderedDict
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel
 from PyQt6.QtGui import QMovie, QScreen, QPixmap, QImage
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize
@@ -13,8 +14,30 @@ SCRIPT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 CONFIG = {
     "position": "bottom",
     "target_gif_size": (200, 200),
+    "cache_max_size": 100,
 }
 # -------------------------
+
+class LRUCache:
+    def __init__(self, maxsize=128):
+        self.maxsize = maxsize
+        self.cache = OrderedDict()
+
+    def __contains__(self, key):
+        return key in self.cache
+
+    def __getitem__(self, key):
+        if key not in self.cache:
+            raise KeyError(key)
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def __setitem__(self, key, value):
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        self.cache[key] = value
+        if len(self.cache) > self.maxsize:
+            self.cache.popitem(last=False)
 
 class SignalBridge(QObject):
     activationRequired = pyqtSignal()
@@ -66,7 +89,7 @@ class GIFPlayer(QWidget):
         super().__init__()
         self.signal_bridge = signal_bridge
         self.is_playing = False
-        self.pixmap_cache = {}
+        self.pixmap_cache = LRUCache(maxsize=CONFIG.get("cache_max_size", 100))
 
         self.assets_dir = os.path.join(SCRIPT_DIRECTORY, "assets")
         self.gifs = [f for f in os.listdir(self.assets_dir) if f.endswith('.gif')]
@@ -193,7 +216,6 @@ class GIFPlayer(QWidget):
         self.move(x, y)
 
     def show_gifs(self):
-        self.change_gifs()
         self.position_window()
         self.show()
         self.movie_player.start()
