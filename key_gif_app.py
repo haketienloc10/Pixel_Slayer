@@ -4,9 +4,10 @@ import signal
 import random
 from collections import OrderedDict
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel
-from PyQt6.QtGui import QMovie, QScreen, QPixmap, QImage
+from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize
 from pynput import keyboard, mouse
+from PIL import Image, ImageQt
 
 SCRIPT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
@@ -49,38 +50,43 @@ class MoviePlayer(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.show_next_frame)
         self.frames = []
+        self.delays = []
         self.current_frame_index = 0
-        self.frame_delay = 50  # ms
 
-    def set_frames(self, frames, delay):
+    def set_frames(self, frames, delays):
         self.frames = frames
-        self.frame_delay = delay if delay > 0 else 50
+        self.delays = [d if d > 0 else 50 for d in delays]
         self.current_frame_index = 0
 
     def start(self):
         if not self.frames:
+            self.finished.emit()
             return
         self.current_frame_index = 0
-        self.timer.start(self.frame_delay)
         self.show_next_frame()
 
     def stop(self):
         self.timer.stop()
         self.frames = []
+        self.delays = []
 
     def show_next_frame(self):
-        if not self.frames:
-            self.timer.stop()
+        if self.current_frame_index >= len(self.frames):
+            self.finished.emit()
             return
 
         pixmap = self.frames[self.current_frame_index]
         self.frameChanged.emit(pixmap)
 
+        delay = self.delays[self.current_frame_index]
+
         self.current_frame_index += 1
-        if self.current_frame_index >= len(self.frames):
-            self.timer.stop()
+        if self.current_frame_index < len(self.frames):
+            self.timer.start(delay)
+        else:
             self.finished.emit()
 
 
@@ -102,49 +108,48 @@ class GIFPlayer(QWidget):
         self.connect_signals()
 
     def _get_cached_movie_frames(self, gif_path, target_size_tuple, is_flipped):
-        target_size = QSize(*target_size_tuple)
         cache_key = (gif_path, target_size_tuple, is_flipped)
         if cache_key in self.pixmap_cache:
             return self.pixmap_cache[cache_key]
 
-        movie = QMovie(gif_path)
-        if not movie.isValid():
-            return [], 0, QSize(0, 0)
+        try:
+            pil_gif = Image.open(gif_path)
+            delays = []
+            processed_frames = []
+            for i in range(pil_gif.n_frames):
+                pil_gif.seek(i)
+                frame = pil_gif.convert("RGBA")
 
-        movie.setCacheMode(QMovie.CacheMode.CacheAll)
-        movie.jumpToFrame(0)
-        
-        original_size = movie.frameRect().size()
-        if not original_size.isValid():
-            return [], 0, QSize(0, 0)
+                delay = pil_gif.info.get('duration', 50)
+                delays.append(delay)
 
-        scaled_size = original_size.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio)
-        delay = movie.nextFrameDelay()
+                if is_flipped:
+                    frame = frame.transpose(Image.FLIP_LEFT_RIGHT)
+                
+                qimage = ImageQt.ImageQt(frame)
+                pixmap = QPixmap.fromImage(qimage)
 
-        processed_frames = []
-        for i in range(movie.frameCount()):
-            movie.jumpToFrame(i);
-            pixmap = movie.currentPixmap()
-            if is_flipped:
-                image = pixmap.toImage()
-                mirrored_image = image.mirrored(True, False)
-                pixmap = QPixmap.fromImage(mirrored_image)
+                scaled_pixmap = pixmap.scaled(QSize(*target_size_tuple), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                processed_frames.append(scaled_pixmap)
+
+            final_size = processed_frames[0].size() if processed_frames else QSize(0, 0)
             
-            scaled_pixmap = pixmap.scaled(scaled_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            processed_frames.append(scaled_pixmap)
+            self.pixmap_cache[cache_key] = (processed_frames, delays, final_size)
+            return processed_frames, delays, final_size
 
-        self.pixmap_cache[cache_key] = (processed_frames, delay, scaled_size)
-        return processed_frames, delay, scaled_size
+        except Exception as e:
+            print(f"Lỗi xử lý GIF {gif_path}: {e}")
+            return [], [], QSize(0, 0)
 
     def _setup_movie_player(self, movie_player, label, gif_path, is_flipped):
         target_size_config = CONFIG.get("target_gif_size", (200, 200))
-        frames, delay, scaled_size = self._get_cached_movie_frames(gif_path, target_size_config, is_flipped)
+        frames, delays, scaled_size = self._get_cached_movie_frames(gif_path, target_size_config, is_flipped)
 
         if not frames:
             return QSize(0, 0)
 
         label.setFixedSize(scaled_size)
-        movie_player.set_frames(frames, delay)
+        movie_player.set_frames(frames, delays)
         return scaled_size
 
     def change_gifs(self):

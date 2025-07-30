@@ -1,8 +1,8 @@
 evdev==1.9.2
-pkg_resources==0.0.0
 pynput==1.8.1
 PyQt6==6.7.1
 PyQt6-Qt6==6.7.3
 PyQt6_sip==13.8.0
 python-xlib==0.33
 six==1.17.0
+Pillow==10.4.0
