@@ -204,9 +204,7 @@ class GIFPlayer(QWidget):
         self.hide()
 
     def handle_activation_request(self):
-        if self.is_playing: return
-        self.is_playing = True
-        self.show_gifs()
+        self.change_gifs()
 
 def main():
     app = QApplication(sys.argv)
